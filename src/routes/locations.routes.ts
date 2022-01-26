@@ -26,19 +26,73 @@ locationsRouter.post('/', async (request, response) => {
         uf
     };
 
-    const newIds = await knex('locations').insert(location);
-    const locationId = newIds[0];
-    const locationItens = items.map((item_id: number) => {
-        return {item_id, 
-            location_id: locationId}
-    });
+    const transaction = await knex.transaction();
 
-    await knex('location_items').insert(locationItens);
+    const newIds = await transaction('locations').insert(location);
+    const locationId = newIds[0];
+    const locationItens = await Promise.all(
+        items.map(async (item_id: number) => {
+          const selectedItem = await transaction('items')
+            .where('id', item_id)
+            .first();
+    
+          if (!selectedItem) {
+            response.status(400).json({ message: 'Item not found!' });
+          }
+          return {
+            item_id,
+            location_id: locationId,
+          };
+        }),
+      );
+
+    await transaction('location_items').insert(locationItens);
+
+    await transaction.commit();
 
     return response.json({
                             id: locationId,
                             ...location
                         });
+});
+
+locationsRouter.get('/:id', async (request, response) => {
+    const { id } = request.params;
+
+    const location = await knex('locations').where('id', id).first();
+
+    if (!location) {
+        return response.status(400).json({ message: 'Location not found.' });
+    }
+
+    const items = await knex('items')
+        .join('location_items', 'items.id', '=', 'location_items.item_id')
+        .where('location_items.location_id', id)
+        .select('items.title')
+
+    return response.json({ location, items});
+});
+
+locationsRouter.get('/', async (request, response) => {
+    const { city, uf, items } = request.query;
+
+    if (city && uf && items) {
+        const parsedItems: Number[] = String(items).split(',').map(item => Number(item.trim()));
+
+        const locations = await knex('locations')
+            .join('location_items', 'locations.id', '=', 'location_items.location_id')
+            .whereIn('location_items.item_id', parsedItems)
+            .where('city', String(city))
+            .where('uf', String(uf))
+            .distinct()
+            .select('locations.*');
+
+            return response.json(locations);
+    } else {
+        const locations = await knex('locations').select('*');
+
+        return response.json(locations);
+    }
 });
 
 export default locationsRouter;
